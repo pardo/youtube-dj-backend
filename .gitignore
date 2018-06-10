@@ -1,0 +1,6 @@
+.idea
+.history
+node_modules
+login.js
+playlists.nedb
+google-client-secrets.json
