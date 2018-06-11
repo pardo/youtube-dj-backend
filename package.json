@@ -1,7 +1,7 @@
 {
-  "name": "spodj",
+  "name": "youtube-dj",
   "version": "0.0.0",
-  "description": "Spotify multiple playlist",
+  "description": "Youtube multiple admins",
   "main": "index.js",
   "start": "node index.js",
   "scripts": {
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/pardo/spodj.git"
+    "url": "https://github.com/pardo/youtube-dj-backend.git"
   },
   "author": "Pardo",
   "license": "BSD",
@@ -21,6 +21,7 @@
     "express": "^4.13.4",
     "google-auth-library": "^1.5.0",
     "googleapis": "^30.0.0",
+    "lodash": "^4.17.10",
     "nedb": "^1.8.0",
     "request": "^2.86.0",
     "socket.io": "^2.1.1",

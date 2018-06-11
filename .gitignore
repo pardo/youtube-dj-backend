@@ -4,3 +4,4 @@ node_modules
 login.js
 *.nedb
 google-client-secrets.json
+youtube-dj

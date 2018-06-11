@@ -1,15 +1,11 @@
-var crypto = require('crypto')
 var http = require('http')
-var request = require('request')
 var express = require('express')
 var bodyParser = require('body-parser')
 // var playlistRoutes = require('./routes/playlist.js')
 var lyricSearch = require('./lyric_search')
+var services = require('./services')
+var youtubeSearch = require('./youtube_search')
 var db = require('./models.js')
-
-const hasher = function hasher (a) {
-  return crypto.createHmac('sha256', 'nosecret').update(a).digest('hex')
-}
 
 var app = express()
 app.set('port', 9000)
@@ -202,7 +198,7 @@ const TracksQueue = (function () {
   this.getQueue = async function () {
     return Promise.all(
       this.tracks.map(async function (videoId) {
-        return getDetailsForVideo(videoId).then(details => {
+        return youtubeSearch.getDetailsForVideo(videoId).then(details => {
           return {
             'videoId': videoId,
             'title': details.title
@@ -247,81 +243,11 @@ YoutubePlayer.tracksQueue = TracksQueue
 YoutubePlayer.tracksQueue.loadTracks()
 YoutubePlayer.startPlayLoop()
 
-// youtube search api
-var {google} = require('googleapis')
-var privatekey = require('./google-client-secrets.json')
-
-// configure a JWT auth client
-let jwtClient = new google.auth.JWT(
-  privatekey.client_email,
-  null,
-  privatekey.private_key,
-  ['https://www.googleapis.com/auth/youtube.readonly']
-)
-// authenticate request
-jwtClient.authorize(function (err, tokens) {
-  if (err) {
-    console.log(err)
-  } else {
-    console.log('Successfully connected!')
-  }
-})
-// global authorization
-google.options({
-  auth: jwtClient
-})
-
-var youtubeService = google.youtube('v3')
-
-function getDetailsForVideo (videoId) {
-  return new Promise(resolve => {
-    db.videoDetails.findOne({'_id': videoId}, (err, doc) => {
-      if (err || !doc) {
-        resolve({})
-      } else {
-        resolve({
-          title: doc.item.snippet.title,
-          thumbnail: doc.item.snippet.thumbnails.high.url
-        })
-      }
-    })
-  })
-}
-
-var searchVideosCache = {} // key is the search term
-function searchVideos (query, callback) {
-  // this function will search on youtube for video matching the query
-  var hash = hasher(query)
-  if (searchVideosCache[hash]) {
-    console.log('using cache')
-    return callback(searchVideosCache[hash])
-  }
-
-  var parameters = {
-    'maxResults': '25',
-    'part': 'snippet',
-    'q': query,
-    'type': 'video'
-  }
-  youtubeService.search.list(parameters, function (err, response) {
-    if (err) { console.log('The API returned an error: ' + err); return }
-    searchVideosCache[hash] = response.data.items
-    for (let index = 0; index < response.data.items.length; index++) {
-      const item = response.data.items[index]
-      db.videoDetails.insert({
-        '_id': item.id.videoId,
-        'item': item
-      })
-    }
-    callback(response.data.items)
-  })
-}
-
 // app.use(playlistRoutes)
 app.get('/api/track/', async function (req, res) {
   var response = {
     videoId: YoutubePlayer.currentTrack,
-    details: await getDetailsForVideo(YoutubePlayer.currentTrack),
+    details: await youtubeSearch.getDetailsForVideo(YoutubePlayer.currentTrack),
     queueIndex: TracksQueue.queueIndex,
     timePlayed: YoutubePlayer.timePlayed,
     isPaused: YoutubePlayer.isPaused()
@@ -403,78 +329,25 @@ app.post('/api/resume/', function (req, res) {
 
 app.get('/api/suggestion/wikipedia/', function (req, res) {
   var q = req.query.search
-  request({
-    url: 'https://en.wikipedia.org/w/api.php',
-    qs: {
-      action: 'opensearch',
-      limit: '10',
-      namespace: 0,
-      format: 'json',
-      search: q
-    }
-  }, function (error, response, body) {
-    if (error) {
-      res.status(404).send('Not found')
-    }
-    try {
-      res.send(JSON.parse(body)[1])
-    } catch (e) {
-      console.log(e)
-      res.status(404).send('Not found')
-    }
+  services.searchWikipedia(q).then((r) => {
+    res.send(r)
+  }, (e) => {
+    res.status(404).send('Not found')
   })
 })
 
 app.get('/api/suggestion/', function (req, res) {
   var q = req.query.search
-  request({
-    url: 'http://www.last.fm/es/search?q=' + q,
-    // url: "https://www.musixmatch.com/ws/1.1/macro.search",
-    strictSSL: false
-  }, function (error, response, body) {
-    if (error) { return res.status(404).send('Not found') }
-    var re = /href="\/.+music\/([\w\d\+]+)\/.*/gi
-    var match = re.exec(body)
-    var result = []
-    while (match != null) {
-      var artist = match[1].split('+').join(' ')
-      if (result.indexOf(artist) == -1) {
-        result.push(artist)
-      }
-      match = re.exec(body)
-    }
-    res.send(result)
-  })
-})
-
-app.get('/api/suggestion/musix/', function (req, res) {
-  var q = req.query.search
-  request({
-    url: 'https://www.musixmatch.com/ws/1.1/macro.search?app_id=community-app-v1.0&format=json&part=artist_image&page_size=10&q=' + q,
-    // url: "https://www.musixmatch.com/ws/1.1/macro.search",
-    strictSSL: false
-  }, function (error, response, body) {
-    if (error) {
-      res.status(404).send('Not found')
-    }
-    try {
-      var r = JSON.parse(body).message.body.macro_result_list.artist_list.reduce(function (a, d) {
-        if (d.artist.artist_name < 65 || d.artist.artist_rating > 0) {
-          a.push(d.artist.artist_name)
-        }
-        return a
-      }, [])
-      res.send(r)
-    } catch (e) {
-      console.log(e)
-      res.status(404).send('Not found')
-    }
+  services.searchLastFm(q).then((r) => {
+    res.send(r)
+  }, (r) => {
+    res.send(r)
   })
 })
 
 app.get('/api/search/', function (req, res) {
   var q = req.query.q
-  searchVideos(q, function (items) {
+  youtubeSearch.videos(q).then(function (items) {
     res.send(items)
   })
 })
