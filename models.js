@@ -1,5 +1,16 @@
 var Datastore = require('nedb')
-var playlists = new Datastore({ filename: 'playlists.nedb', autoload: true });
+var playlists = new Datastore({
+  filename: 'playlists.nedb',
+  autoload: true
+})
+var queue = new Datastore({
+  filename: 'queue.nedb',
+  autoload: true
+})
+var videoDetails = new Datastore({
+  filename: 'videoDetails.nedb',
+  autoload: true
+})
 /*
 {
   id: "id",
@@ -7,4 +18,8 @@ var playlists = new Datastore({ filename: 'playlists.nedb', autoload: true });
   tracks: ["spotify:uri", "spotify:uri"]
 }
 */
-module.exports.playlists = playlists
+module.exports = {
+  playlists: playlists,
+  queue: queue,
+  videoDetails: videoDetails
+}

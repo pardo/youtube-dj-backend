@@ -3,9 +3,9 @@ var http = require('http')
 var request = require('request')
 var express = require('express')
 var bodyParser = require('body-parser')
-var playlistRoutes = require('./routes/playlist.js')
+// var playlistRoutes = require('./routes/playlist.js')
 var lyricSearch = require('./lyric_search')
-var playlists = require('./models.js').playlists
+var db = require('./models.js')
 
 const hasher = function hasher (a) {
   return crypto.createHmac('sha256', 'nosecret').update(a).digest('hex')
@@ -14,7 +14,7 @@ const hasher = function hasher (a) {
 var app = express()
 app.set('port', 9000)
 // app.use(express.static('web'));
-app.use(express.static('static_html'))
+app.use(express.static('youtube-dj/dist'))
 app.use(bodyParser.json())
 app.use(bodyParser.urlencoded({ extended: true }))
 
@@ -88,7 +88,7 @@ const YoutubePlayer = (function () {
   this.playVideo = function (videoId) {
     if (!this.initialized) { console.log('not ready to play') };
     if (this.currentTrack === videoId) return null
-    console.log('PlayeVideo %s %s', videoId, YoutubePlayer.tracksQueue.videosDetails[videoId].title)
+    console.log('PlayeVideo %s', videoId)
     this.currentTrack = videoId
     io.emit('player.play', {
       videoId: this.currentTrack
@@ -101,8 +101,6 @@ const YoutubePlayer = (function () {
 const TracksQueue = (function () {
   // lists of ids
   this.tracks = []
-  // dict of videoId -> {title: ''}
-  this.videosDetails = {}
   // trackUris index
   this.queueIndex = -1
 
@@ -110,11 +108,44 @@ const TracksQueue = (function () {
 
   }
 
+  this.saveTracks = function () {
+    db.queue.update(
+      {'_id': 'singleton'},
+      {'queue': this.tracks},
+      {},
+      (err, count) => {
+        if (err) {
+          console.log('Error saving tracks')
+        } else {
+          console.log('Saving tracks %s', count)
+        }
+      }
+    )
+  }
+
+  this.loadTracks = function () {
+    db.queue.findOne({}, (err, doc) => {
+      if (err) { console.log('Unable to load tracks') }
+      if (!doc) {
+        console.log('Create track store')
+        // create the initial doc
+        db.queue.insert({
+          '_id': 'singleton',
+          'queue': []
+        })
+      } else {
+        console.log('Loaded tracks doc %s', doc.queue.length)
+        this.tracks = doc.queue
+      }
+    })
+  }
+
   this.swap = function (source, dest) {
     if (this.tracks[source] && this.tracks[dest]) {
       var tmp = this.tracks[source]
       this.tracks[source] = this.tracks[dest]
       this.tracks[dest] = tmp
+      this.saveTracks()
       io.emit('queue.swap', {
         dest: this.tracks[source],
         source: this.tracks[dest]
@@ -128,6 +159,8 @@ const TracksQueue = (function () {
       return
     }
     this.tracks.splice(this.queueIndex + 1, 0, videoId)
+    io.emit('queue.added', { videoId: videoId })
+    this.saveTracks()
   }
 
   this.replaceQueue = function (videoIdList) {
@@ -140,18 +173,17 @@ const TracksQueue = (function () {
     }
     this.queueIndex = -1
     io.emit('queue.replaced')
+    this.saveTracks()
   }
 
-  this.pushTrack = function (videoId, title) {
+  this.pushTrack = function (videoId) {
     if (this.tracks.indexOf(videoId) !== -1) {
       io.emit('queue.alreadyInQueue', { videoId: videoId })
       return
     }
-    this.videosDetails[videoId] = {
-      'title': title
-    }
     this.tracks.push(videoId)
     io.emit('queue.added', { videoId: videoId })
+    this.saveTracks()
   }
 
   this.removeTrack = function (videoId) {
@@ -163,17 +195,23 @@ const TracksQueue = (function () {
         this.queueIndex -= 1
       }
       io.emit('queue.removed', { videoId: videoId })
+      this.saveTracks()
     }
   }
 
-  this.getQueue = function () {
-    return this.tracks.map(videoId => {
-      return {
-        'videoId': videoId,
-        'title': this.videosDetails[videoId].title
-      }
-    })
+  this.getQueue = async function () {
+    return Promise.all(
+      this.tracks.map(async function (videoId) {
+        return getDetailsForVideo(videoId).then(details => {
+          return {
+            'videoId': videoId,
+            'title': details.title
+          }
+        })
+      })
+    )
   }
+
   this.moveQueueIndexTo = function (indexNumber) {
     while (indexNumber < 0) {
       indexNumber += this.tracks.length
@@ -196,7 +234,7 @@ const TracksQueue = (function () {
   }
 
   this.getNextTrackInQueue = function () {
-    if (this.tracks.length == 0) return null
+    if (this.tracks.length === 0) return null
     this.moveQueueIndexToNext()
     console.log('switch queue to next track')
     return this.getCurrentTrack()
@@ -206,6 +244,7 @@ const TracksQueue = (function () {
 })()
 
 YoutubePlayer.tracksQueue = TracksQueue
+YoutubePlayer.tracksQueue.loadTracks()
 YoutubePlayer.startPlayLoop()
 
 // youtube search api
@@ -235,17 +274,20 @@ google.options({
 var youtubeService = google.youtube('v3')
 
 function getDetailsForVideo (videoId) {
-  let data = videoResultsCache[videoId]
-  if (!data) {
-    return {}
-  }
-  return {
-    title: data.snippet.title,
-    thumbnail: data.snippet.thumbnails.high.url
-  }
+  return new Promise(resolve => {
+    db.videoDetails.findOne({'_id': videoId}, (err, doc) => {
+      if (err || !doc) {
+        resolve({})
+      } else {
+        resolve({
+          title: doc.item.snippet.title,
+          thumbnail: doc.item.snippet.thumbnails.high.url
+        })
+      }
+    })
+  })
 }
 
-var videoResultsCache = {} // key is the videoid
 var searchVideosCache = {} // key is the search term
 function searchVideos (query, callback) {
   // this function will search on youtube for video matching the query
@@ -266,32 +308,45 @@ function searchVideos (query, callback) {
     searchVideosCache[hash] = response.data.items
     for (let index = 0; index < response.data.items.length; index++) {
       const item = response.data.items[index]
-      videoResultsCache[item.id.videoId] = item
+      db.videoDetails.insert({
+        '_id': item.id.videoId,
+        'item': item
+      })
     }
     callback(response.data.items)
   })
 }
 
-app.use(playlistRoutes)
-
-app.get('/api/track/', function (req, res) {
-  res.send({
+// app.use(playlistRoutes)
+app.get('/api/track/', async function (req, res) {
+  var response = {
     videoId: YoutubePlayer.currentTrack,
-    details: getDetailsForVideo(YoutubePlayer.currentTrack),
+    details: await getDetailsForVideo(YoutubePlayer.currentTrack),
     queueIndex: TracksQueue.queueIndex,
     timePlayed: YoutubePlayer.timePlayed,
     isPaused: YoutubePlayer.isPaused()
-  })
+  }
+  res.send(response)
 })
 
 app.get('/api/queue/', function (req, res) {
-  res.send(TracksQueue.getQueue())
+  TracksQueue.getQueue().then(queue => res.send(queue))
+})
+
+app.get('/api/server/', function (req, res) {
+  res.send(serverSet)
+})
+
+app.post('/api/queue/next/', function (req, res) {
+  TracksQueue.pushTrackAfterCurrent(
+    req.body.videoId
+  )
+  res.send('OK')
 })
 
 app.post('/api/queue/', function (req, res) {
   TracksQueue.pushTrack(
-    req.body.videoId,
-    req.body.title
+    req.body.videoId
   )
   res.send('OK')
 })
@@ -314,6 +369,13 @@ app.post('/api/queue/changeto/', function (req, res) {
 app.post('/api/unqueue/', function (req, res) {
   var videoId = req.body.videoId
   TracksQueue.removeTrack(videoId)
+  res.send('OK')
+})
+
+app.post('/api/seek-to/', function (req, res) {
+  io.emit('player.seek-to', {
+    position: req.body.position
+  })
   res.send('OK')
 })
 
@@ -352,7 +414,7 @@ app.get('/api/suggestion/wikipedia/', function (req, res) {
     }
   }, function (error, response, body) {
     if (error) {
-      res.status(404).send('Not found')      
+      res.status(404).send('Not found')
     }
     try {
       res.send(JSON.parse(body)[1])
@@ -393,7 +455,7 @@ app.get('/api/suggestion/musix/', function (req, res) {
     strictSSL: false
   }, function (error, response, body) {
     if (error) {
-      res.status(404).send('Not found')      
+      res.status(404).send('Not found')
     }
     try {
       var r = JSON.parse(body).message.body.macro_result_list.artist_list.reduce(function (a, d) {
@@ -417,10 +479,11 @@ app.get('/api/search/', function (req, res) {
   })
 })
 
+/*
 app.post('/api/playlist/:id/play/', function (req, res) {
   playlists.findOne({ _id: req.params.id }, function (err, doc) {
     if (err) {
-      res.status(404).send('Not found')      
+      res.status(404).send('Not found')
     }
     if (doc) {
       TracksQueue.replaceQueue(doc.tracks)
@@ -430,17 +493,34 @@ app.post('/api/playlist/:id/play/', function (req, res) {
     }
   })
 })
+*/
+
+app.get('/', function (req, res) {
+  res.sendFile(__dirname + '/youtube-dj/dist/index.html')
+})
 
 var server = http.createServer(app)
 var io = require('socket.io')()
 io.attach(server)
 
+var serverSet = null
 // not reciving event yet
 io.on('connection', function (socket) {
   socket.on('musicServer.update', function (data) {
+    if (serverSet !== null && serverSet !== this.id) {
+      return console.log('Server is playing can\'t be the server')
+    }
+    serverSet = this.id
+    io.emit('server.set', serverSet)
     YoutubePlayer.trackLength = data.trackLength
     YoutubePlayer.timePlayed = data.timePlayed
     YoutubePlayer.paused = data.isPaused
+  })
+  socket.on('disconnect', function (data) {
+    if (serverSet === this.id) {
+      serverSet = null
+      io.emit('server.set', null)
+    }
   })
 })
 
