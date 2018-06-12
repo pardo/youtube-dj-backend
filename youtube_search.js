@@ -55,7 +55,7 @@ function searchVideos (query) {
     }
 
     var parameters = {
-      'maxResults': '25',
+      'maxResults': '30',
       'part': 'snippet',
       'q': query,
       'type': 'video'

@@ -2,7 +2,6 @@ var http = require('http')
 var express = require('express')
 var bodyParser = require('body-parser')
 // var playlistRoutes = require('./routes/playlist.js')
-var lyricSearch = require('./lyric_search')
 var services = require('./services')
 var youtubeSearch = require('./youtube_search')
 var db = require('./models.js')
@@ -282,6 +281,11 @@ app.post('/api/queue/swap/', function (req, res) {
     parseInt(req.body.source),
     parseInt(req.body.dest)
   )
+  res.send('OK')
+})
+
+app.post('/api/queue/clear/', function (req, res) {
+  TracksQueue.replaceQueue([])
   res.send('OK')
 })
 

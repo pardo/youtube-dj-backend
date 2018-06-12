@@ -1,4 +1,5 @@
 var request = require('request')
+var cheerio = require('cheerio')
 
 function searchLastFm (query) {
   return new Promise((resolve, reject) => {
@@ -59,5 +60,30 @@ function searchWikipedia (query) {
   })
 }
 
+function searchLyric (query) {
+  return new Promise((resolve, reject) => {
+    request(
+      {
+        url: 'https://ajax.googleapis.com/ajax/services/search/web?v=1.0&q=site:azlyrics.com ' + query
+      },
+      function (error, response, body) {
+        if (error || response.statusCode !== 200) {
+          return reject(error)
+        }
+        request({
+          url: JSON.parse(response.body).responseData.results[0].url
+        }, function (error, response, body) {
+          if (error || response.statusCode !== 200) {
+            return reject(error)
+          }
+          var $ = cheerio.load(body)
+          resolve($('.ringtone ++++ div').text())
+        })
+      }
+    )
+  })
+}
+
+exports.searchLyric = searchLyric
 exports.searchLastFm = searchLastFm
 exports.searchWikipedia = searchWikipedia
